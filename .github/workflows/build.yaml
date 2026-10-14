@@ -265,20 +265,49 @@ jobs:
             -Ptarget-platform=android-arm64 \
             -x :app:compileFlutterBuildDebug -x :app:copyFlutterAssetsDebug
 
-      - name: Verify Android core dependencies
+      - name: Build and collect Android core dependencies
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          CORE_BUILD_DIR_FILE: ${{ runner.temp }}/flclash-core-build-dir.txt
         run: |
-          test -s build/core/gomobile/classes.jar
-          test -s build/core/gomobile/core.aar
-          test -n "$(find build/core -type f -name 'libclash.so' -print -quit)"
+          set -euo pipefail
+          init_script="$RUNNER_TEMP/flclash-core-export.gradle"
+          cat > "$init_script" <<'GRADLE'
+          gradle.projectsEvaluated {
+              def coreProject = gradle.rootProject.project(':core')
+              new File(System.getenv('CORE_BUILD_DIR_FILE')).text = coreProject.layout.buildDirectory.get().asFile.absolutePath
+          }
+          GRADLE
+          ./gradlew :core:bindCore :core:unpackDebugCoreJniLibs \
+            -Ptarget-platform=android-arm64 -I "$init_script"
+          core_dir="$(cat "$CORE_BUILD_DIR_FILE")"
+          echo "Core build directory: $core_dir"
+          find "$core_dir" -type f \( -name '*.jar' -o -name '*.aar' -o -name '*.so' \) -print
+          for file in classes.jar core.aar; do
+            if [ ! -s "$core_dir/gomobile/$file" ]; then
+              echo "::error::Missing or empty file: $core_dir/gomobile/$file"
+              exit 1
+            fi
+          done
+          so_file="$(find "$core_dir" -type f -path '*/arm64-v8a/libclash.so' -print -quit)"
+          if [ -z "$so_file" ] || [ ! -s "$so_file" ]; then
+            echo '::error::Missing arm64-v8a/libclash.so; see file listing above.'
+            exit 1
+          fi
+          out="$GITHUB_WORKSPACE/android-core-export"
+          mkdir -p "$out/jniLibs/arm64-v8a"
+          cp "$core_dir/gomobile/classes.jar" "$core_dir/gomobile/core.aar" "$out/"
+          cp "$so_file" "$out/jniLibs/arm64-v8a/libclash.so"
+          git rev-parse HEAD > "$out/source-commit.txt"
+          git -C ../core/Clash.Meta rev-parse HEAD > "$out/core-commit.txt"
+          find "$out" -type f -exec ls -lh {} \;
 
       - name: Upload Android core dependencies
         uses: actions/upload-artifact@v4
         with:
           name: android-core-dependencies-arm64
-          path: |
-            build/core/gomobile/classes.jar
-            build/core/gomobile/core.aar
-            build/core/**/*.so
+          path: android-core-export/
           if-no-files-found: error
           retention-days: 7
 
