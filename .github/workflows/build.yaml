@@ -265,6 +265,23 @@ jobs:
             -Ptarget-platform=android-arm64 \
             -x :app:compileFlutterBuildDebug -x :app:copyFlutterAssetsDebug
 
+      - name: Verify Android core dependencies
+        run: |
+          test -s build/core/gomobile/classes.jar
+          test -s build/core/gomobile/core.aar
+          test -n "$(find build/core -type f -name 'libclash.so' -print -quit)"
+
+      - name: Upload Android core dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-core-dependencies-arm64
+          path: |
+            build/core/gomobile/classes.jar
+            build/core/gomobile/core.aar
+            build/core/**/*.so
+          if-no-files-found: error
+          retention-days: 7
+
   rust:
     name: Rust
     if: *checks
