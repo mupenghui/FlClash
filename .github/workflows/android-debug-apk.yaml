@@ -1,0 +1,97 @@
+name: Android Debug APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source commit or branch to build (original unmodified Flutter project)'
+        required: true
+        default: '03f955382409a4a7ac1f3f92e46d9fcc6d39f106'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FLUTTER_VERSION: '3.47.6'
+      GO_VERSION: '1.27.1'
+    steps:
+      - name: Checkout selected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28c
+          link-to-sdk: true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build full Flutter debug APK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: flutter build apk --debug --target-platform android-arm64
+
+      - name: Check packaged Flutter and Go components
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          apk = Path('build/app/outputs/flutter-apk/app-debug.apk')
+          if not apk.is_file():
+              raise SystemExit('Flutter APK output not found')
+          with ZipFile(apk) as z:
+              names = set(z.namelist())
+              for name in ('lib/arm64-v8a/libflutter.so', 'lib/arm64-v8a/libclash.so'):
+                  if name not in names:
+                      raise SystemExit('Missing APK entry: ' + name)
+              assets = [n for n in names if n.startswith('assets/flutter_assets/') and not n.endswith('/')]
+              if not assets:
+                  raise SystemExit('Missing Flutter assets')
+              print('Flutter asset entries:', len(assets))
+              print('Checked:', apk, 'bytes:', apk.stat().st_size)
+          PY
+          git rev-parse HEAD > build/app/outputs/flutter-apk/source-commit.txt
+          git -C core/Clash.Meta rev-parse HEAD > build/app/outputs/flutter-apk/core-commit.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlClash-full-flutter-debug-arm64
+          path: |
+            build/app/outputs/flutter-apk/app-debug.apk
+            build/app/outputs/flutter-apk/source-commit.txt
+            build/app/outputs/flutter-apk/core-commit.txt
+          if-no-files-found: error
+          retention-days: 7
